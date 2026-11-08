@@ -1,0 +1,98 @@
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router';
+import { adminRequest } from '../../services/api';
+import { useApp } from '../../context/AppContext';
+import { SkeletonTable } from '../../components/Skeleton';
+import Pagination from '../../components/Pagination';
+
+const PAGE_SIZE = 10;
+
+const T = {
+  en: {
+    title: 'All Farms', loading: 'Loading…', noFarms: 'No farms found', importCsv: 'Import CSV',
+    searchPlaceholder: 'Search name or district…',
+    colFarmName: 'Farm Name', colDistrict: 'District', colSize: 'Size',
+    colOwner: 'Owner ID', colCreated: 'Created',
+  },
+  si: {
+    title: 'සියලු ගොවිපළ', loading: 'පූරණය වෙමින්...', noFarms: 'ගොවිපළ හමු නොවීය', importCsv: 'CSV ආයාත කරන්න',
+    searchPlaceholder: 'නම හෝ දිස්ත්‍රික්කය සොයන්න...',
+    colFarmName: 'ගොවිපළ නම', colDistrict: 'දිස්ත්‍රික්කය', colSize: 'ප්‍රමාණය',
+    colOwner: 'හිමිකරු ID', colCreated: 'සාදන ලද',
+  },
+  ta: {
+    title: 'அனைத்துப் பண்ணைகளும்', loading: 'ஏற்றுகிறது...', noFarms: 'பண்ணைகள் கிடைக்கவில்லை', importCsv: 'CSV இறக்குமதி',
+    searchPlaceholder: 'பெயர் அல்லது மாவட்டம் தேடவும்...',
+    colFarmName: 'பண்ணை பெயர்', colDistrict: 'மாவட்டம்', colSize: 'அளவு',
+    colOwner: 'உரிமையாளர் ID', colCreated: 'உருவாக்கப்பட்டது',
+  },
+};
+
+export default function AdminFarms() {
+  const { lang } = useApp();
+  const t = T[lang] || T.en;
+  const navigate = useNavigate();
+
+  const [farms, setFarms]     = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch]   = useState('');
+  const [page, setPage]       = useState(1);
+
+  useEffect(() => {
+    adminRequest('/farms').then(data => { setFarms(Array.isArray(data) ? data : []); setLoading(false); }).catch(() => setLoading(false));
+  }, []);
+
+  const filtered = farms.filter(f =>
+    !search || f.name?.toLowerCase().includes(search.toLowerCase()) || f.district?.toLowerCase().includes(search.toLowerCase())
+  );
+
+  useEffect(() => { setPage(1); }, [search]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const pageFarms = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  if (loading) return <SkeletonTable rows={6} cols={4} />;
+
+  const headers = [t.colFarmName, t.colDistrict, t.colSize, t.colOwner, t.colCreated];
+
+  return (
+    <div style={{ padding: '28px', maxWidth: '1600px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+        <h2 style={{ margin: 0, color: 'var(--text)' }}>{t.title} <span style={{ fontSize: '18px', color: 'var(--muted)', fontWeight: 400 }}>({farms.length})</span></h2>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <button type="button" onClick={() => navigate('/admin/farms/import')}
+            style={{ padding: '8px 16px', borderRadius: '8px', background: 'var(--card)', border: '1px solid var(--border)', color: 'var(--text)', fontWeight: 600, fontSize: '15px', cursor: 'pointer' }}>
+            📥 {t.importCsv}
+          </button>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder={t.searchPlaceholder}
+            style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--input-bg)', color: 'var(--text)', fontSize: '16px', width: '220px' }} />
+        </div>
+      </div>
+
+      <div className="fx-card" style={{ background: 'var(--card)', borderRadius: '14px', border: '1px solid var(--border)', overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
+              {headers.map(h => (
+                <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12.5px', fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {pageFarms.map(f => (
+              <tr key={f.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ padding: '12px 16px', fontWeight: 600, fontSize: '16px', color: 'var(--text)' }}>🌾 {f.name}</td>
+                <td style={{ padding: '12px 16px', fontSize: '15px', color: 'var(--muted)' }}>{f.district}</td>
+                <td style={{ padding: '12px 16px', fontSize: '15px' }}>{f.size} {f.size_unit}</td>
+                <td style={{ padding: '12px 16px', fontSize: '15px', color: 'var(--muted)' }}>{f.owner_name || `#${f.owner_id}`}</td>
+                <td style={{ padding: '12px 16px', fontSize: '14px', color: 'var(--muted)' }}>{f.created_at ? new Date(f.created_at).toLocaleDateString() : '—'}</td>
+              </tr>
+            ))}
+            {filtered.length === 0 && <tr><td colSpan={5} style={{ padding: '32px', textAlign: 'center', color: 'var(--muted)' }}>{t.noFarms}</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <Pagination page={page} totalPages={totalPages} onChange={setPage} />
+    </div>
+  );
+}

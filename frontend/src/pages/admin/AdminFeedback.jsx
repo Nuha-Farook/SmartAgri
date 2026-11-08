@@ -1,0 +1,178 @@
+import { useEffect, useState } from 'react';
+import useDialogDismiss from '../../hooks/useDialogDismiss';
+import { adminRequest } from '../../services/api';
+import { useApp } from '../../context/AppContext';
+import { SkeletonTable } from '../../components/Skeleton';
+
+const T = {
+  en: {
+    title: 'Feedback & Complaints', loading: 'Loading…', noFeedback: 'No feedback yet',
+    tabOpen: 'Open', tabResolved: 'Resolved', tabAll: 'All',
+    adminReply: 'Admin reply', replyResolve: 'Reply & Resolve',
+    replyTo: 'Reply to:', replyPlaceholder: 'Type your reply…',
+    cancel: 'Cancel', sending: 'Sending…', sendResolve: 'Send & Resolve',
+    resolvedOn: (date) => `Resolved ${date}`,
+    deleteItem: 'Delete', confirmDelete: 'Delete this feedback? This cannot be undone.', deletedUser: 'Deleted account',
+  },
+  si: {
+    title: 'ප්‍රතිචාර සහ පැමිණිලි', loading: 'පූරණය වෙමින්...', noFeedback: 'ප්‍රතිචාර නොමැත',
+    tabOpen: 'විවෘත', tabResolved: 'විසඳා ඇත', tabAll: 'සියල්ල',
+    adminReply: 'පරිපාලක පිළිතුර', replyResolve: 'පිළිතුරු දී විසඳන්න',
+    replyTo: '↩ පිළිතුරු:', replyPlaceholder: 'ඔබේ පිළිතුර ටයිප් කරන්න...',
+    cancel: 'අවලංගු කරන්න', sending: 'යවමින්...', sendResolve: 'යවා විසඳන්න',
+    resolvedOn: (date) => `විසඳා ඇත ${date}`,
+    deleteItem: 'මකන්න', confirmDelete: 'මෙම ප්‍රතිචාරය මකන්නද? මෙය ආපසු හැරවිය නොහැක.', deletedUser: 'මකා දැමූ ගිණුම',
+  },
+  ta: {
+    title: 'கருத்துக்கள் & புகார்கள்', loading: 'ஏற்றுகிறது...', noFeedback: 'கருத்துக்கள் இல்லை',
+    tabOpen: 'திறந்திருக்கும்', tabResolved: 'தீர்க்கப்பட்டது', tabAll: 'அனைத்தும்',
+    adminReply: 'நிர்வாகப் பதில்', replyResolve: 'பதிலளித்து தீர்க்கவும்',
+    replyTo: '↩ பதில்:', replyPlaceholder: 'உங்கள் பதிலைத் தட்டச்சு செய்யுங்கள்...',
+    cancel: 'ரத்து செய்', sending: 'அனுப்புகிறது...', sendResolve: 'அனுப்பி தீர்க்கவும்',
+    resolvedOn: (date) => `தீர்க்கப்பட்டது ${date}`,
+    deleteItem: 'நீக்கு', confirmDelete: 'இந்தக் கருத்தை நீக்கவா? இதைத் திரும்பப் பெற முடியாது.', deletedUser: 'நீக்கப்பட்ட கணக்கு',
+  },
+};
+
+const TYPE_COLOR = { feedback: '#1565c0', complaint: '#e53935', bug: '#f57c00' };
+const TYPE_ICON  = { feedback: '💬', complaint: '😤', bug: '🐛' };
+
+export default function AdminFeedback() {
+  const { lang } = useApp();
+  const t = T[lang] || T.en;
+
+  const [items, setItems]         = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [filter, setFilter]       = useState('open');
+  const [selected, setSelected]   = useState(null);
+  useDialogDismiss(Boolean(selected), () => setSelected(null));
+  const [reply, setReply]         = useState('');
+  const [replying, setReplying]   = useState(false);
+
+  const load = (st = filter) => {
+    setLoading(true);
+    adminRequest(`/feedback${st ? `?feedback_status=${st}` : ''}`).then(data => { setItems(data); setLoading(false); }).catch(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, [filter]);
+
+  const [error, setError] = useState('');
+
+  const handleReply = async (e) => {
+    e.preventDefault();
+    if (!reply.trim()) return;
+    setReplying(true);
+    setError('');
+    try {
+      await adminRequest(`/feedback/${selected.id}/reply`, { method: 'POST', body: JSON.stringify({ reply: reply.trim() }) });
+      setSelected(null); setReply('');
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally { setReplying(false); }
+  };
+
+  const handleDelete = async (item) => {
+    if (!window.confirm(t.confirmDelete)) return;
+    setError('');
+    try {
+      await adminRequest(`/feedback/${item.id}`, { method: 'DELETE' });
+      setItems(list => list.filter(i => i.id !== item.id));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const tabs = [
+    { value: 'open',     label: t.tabOpen },
+    { value: 'resolved', label: t.tabResolved },
+    { value: '',         label: t.tabAll },
+  ];
+
+  return (
+    <div style={{ padding: '28px', maxWidth: '1600px' }}>
+      <h2 style={{ margin: '0 0 20px', color: 'var(--text)' }}>{t.title}</h2>
+
+      <div style={{ display: 'flex', gap: '4px', marginBottom: '20px' }}>
+        {tabs.map(({ value, label }) => (
+          <button key={value} onClick={() => setFilter(value)}
+            style={{ padding: '7px 16px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: '15px',
+              background: filter === value ? '#7c3aed' : 'var(--card)', color: filter === value ? '#fff' : 'var(--muted)',
+            }}>{label}</button>
+        ))}
+      </div>
+
+      {error && <div className="auth-error" role="alert" style={{ marginBottom: '12px' }}>⚠️ {error}</div>}
+
+      {loading ? (
+        <SkeletonTable rows={5} cols={3} />
+      ) : items.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: '60px', color: 'var(--muted)' }}>{t.noFeedback}</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {items.map(item => (
+            <div key={item.id} className="fx-card" style={{ background: 'var(--card)', borderRadius: '12px', border: '1px solid var(--border)', padding: '18px' }}>
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                <span style={{ fontSize: '24px' }}>{TYPE_ICON[item.type] || '💬'}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '4px' }}>
+                    <span style={{ fontWeight: 700, fontSize: '17px', color: 'var(--text)' }}>{item.subject}</span>
+                    <span style={{ fontSize: '12.5px', padding: '2px 8px', borderRadius: '99px', fontWeight: 600, background: (TYPE_COLOR[item.type] || '#888') + '18', color: TYPE_COLOR[item.type] || '#888' }}>{item.type}</span>
+                    <span style={{ fontSize: '12.5px', padding: '2px 8px', borderRadius: '99px', fontWeight: 600, background: item.status === 'open' ? '#e5393518' : '#2d6a4f18', color: item.status === 'open' ? '#e53935' : '#2d6a4f' }}>{item.status}</span>
+                  </div>
+                  <p style={{ margin: '0 0 8px', color: 'var(--muted)', fontSize: '16px', lineHeight: '1.5' }}>{item.message}</p>
+                  <div style={{ fontSize: '14px', color: 'var(--muted)' }}>
+                    {item.user_name
+                      ? <><strong style={{ color: 'var(--text)' }}>{item.user_name}</strong> · {item.user_email}</>
+                      : t.deletedUser}
+                    {' · '}{new Date(item.created_at).toLocaleString()}
+                    {item.resolved_at && ` · ${t.resolvedOn(new Date(item.resolved_at).toLocaleDateString())}`}
+                  </div>
+                  {item.admin_reply && (
+                    <div style={{ marginTop: '10px', padding: '10px', background: '#7c3aed18', borderRadius: '8px', borderLeft: '3px solid #7c3aed' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 600, color: '#7c3aed', marginBottom: '4px' }}>{t.adminReply}</div>
+                      <div style={{ fontSize: '15px', color: 'var(--text)' }}>{item.admin_reply}</div>
+                    </div>
+                  )}
+                  {item.status === 'open' && (
+                    <button onClick={() => { setSelected(item); setReply(''); }}
+                      style={{ marginTop: '10px', padding: '6px 14px', borderRadius: '7px', border: '1px solid #7c3aed', background: 'none', cursor: 'pointer', color: '#7c3aed', fontSize: '15px', fontWeight: 600 }}>
+                      {t.replyResolve}
+                    </button>
+                  )}
+                  <button onClick={() => handleDelete(item)}
+                    style={{ marginTop: '10px', marginLeft: item.status === 'open' ? '8px' : 0, padding: '6px 14px', borderRadius: '7px', border: '1px solid color-mix(in srgb, var(--red) 50%, var(--border))', background: 'none', cursor: 'pointer', color: 'var(--red)', fontSize: '15px', fontWeight: 600 }}>
+                    {t.deleteItem}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Reply modal */}
+      {selected && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }} onClick={() => setSelected(null)}>
+          <div className="fx-card" style={{ background: 'var(--card)', borderRadius: '16px', padding: '28px', width: '100%', maxWidth: '480px' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 8px', color: 'var(--text)' }}>{t.replyTo} {selected.subject}</h3>
+            <p style={{ fontSize: '15px', color: 'var(--muted)', margin: '0 0 16px' }}>{selected.message}</p>
+            <form onSubmit={handleReply} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <textarea required rows={4} value={reply} onChange={e => setReply(e.target.value)}
+                placeholder={t.replyPlaceholder}
+                style={{ padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--input-bg)', color: 'var(--text)', fontSize: '16px', resize: 'vertical' }} />
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button type="button" onClick={() => setSelected(null)}
+                  style={{ flex: 1, padding: '10px', borderRadius: '8px', border: '1px solid var(--border)', background: 'none', cursor: 'pointer', color: 'var(--text)' }}>{t.cancel}</button>
+                <button type="submit" disabled={replying}
+                  style={{ flex: 1, padding: '10px', borderRadius: '8px', border: 'none', background: '#7c3aed', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
+                  {replying ? t.sending : t.sendResolve}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

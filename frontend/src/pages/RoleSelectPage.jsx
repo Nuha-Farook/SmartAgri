@@ -1,0 +1,125 @@
+import { Navigate, useNavigate } from 'react-router';
+import { getAuthSession, setActiveRole, getUserRoles, clearAuthSession } from '../services/api';
+import { useApp } from '../context/AppContext';
+
+const T = {
+  en: {
+    title: 'Choose Your Role',
+    sub: 'You have multiple roles. Select which one you want to use now.',
+    landOwner: 'Land Owner',
+    landOwnerDesc: 'Manage your farms, crops, and cultivations.',
+    trader: 'Trader',
+    traderDesc: 'Browse requests, manage orders, and track transactions.',
+    continue: 'Continue →',
+    logout: 'Log out',
+  },
+  si: {
+    title: 'ඔබේ භූමිකාව තෝරන්න',
+    sub: 'ඔබට භූමිකා දෙකක් ඇත. දැන් භාවිතා කිරීමට කැමති එකක් තෝරන්න.',
+    landOwner: 'ඉඩම් හිමිකරු',
+    landOwnerDesc: 'ඔබේ ගොවිපළ, බෝග සහ වගාවන් කළමනාකරණය කරන්න.',
+    trader: 'වෙළෙන්දා',
+    traderDesc: 'ඉල්ලීම් බලන්න, ඇණවුම් කළමනාකරණය කරන්න, ගනුදෙනු නිරීක්ෂණය කරන්න.',
+    continue: 'ඉදිරියට →',
+    logout: 'පිටවන්න',
+  },
+  ta: {
+    title: 'உங்கள் பாத்திரத்தைத் தேர்ந்தெடுங்கள்',
+    sub: 'உங்களிடம் இரண்டு பாத்திரங்கள் உள்ளன. இப்போது பயன்படுத்த விரும்புவதை தேர்ந்தெடுங்கள்.',
+    landOwner: 'நில உரிமையாளர்',
+    landOwnerDesc: 'உங்கள் பண்ணைகள், பயிர்கள் மற்றும் சாகுபடிகளை நிர்வகிக்கவும்.',
+    trader: 'வணிகர்',
+    traderDesc: 'கோரிக்கைகளைப் பாருங்கள், ஆர்டர்களை நிர்வகியுங்கள், பரிவர்த்தனைகளைக் கண்காணியுங்கள்.',
+    continue: 'தொடர்க →',
+    logout: 'வெளியேறு',
+  },
+};
+
+const ROLE_CONFIG = {
+  'Land Owner': { icon: '🌾', descKey: 'landOwnerDesc', labelKey: 'landOwner', path: '/landowner/dashboard', color: '#2d6a4f' },
+  'Trader':     { icon: '🏪', descKey: 'traderDesc',    labelKey: 'trader',    path: '/trader/dashboard',   color: '#1565c0' },
+};
+
+export default function RoleSelectPage() {
+  const navigate = useNavigate();
+  const { lang } = useApp();
+  const t = T[lang] || T.en;
+  const { user } = getAuthSession();
+  const roles = getUserRoles();
+
+  // Redirects are rendered: calling navigate() while rendering is ignored, which left this page blank.
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role === 'Admin') return <Navigate to="/admin/dashboard" replace />;
+  // Nothing to choose with a single role.
+  if (roles.length === 1 && ROLE_CONFIG[roles[0]]) {
+    return <Navigate to={ROLE_CONFIG[roles[0]].path} replace />;
+  }
+
+  const handleSelect = (role) => {
+    setActiveRole(role);
+    const cfg = ROLE_CONFIG[role];
+    navigate(cfg ? cfg.path : '/marketplace', { replace: true });
+  };
+
+  const handleLogout = () => {
+    clearAuthSession();
+    navigate('/login', { replace: true });
+  };
+
+  return (
+    <main style={{
+      minHeight: '100vh', display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center',
+      background: 'var(--bg)', padding: '24px',
+    }}>
+      <div className="role-hero" style={{ textAlign: 'center', marginBottom: '32px' }}>
+        <div className="role-hero__logo" style={{ fontSize: '48px', marginBottom: '12px' }}>🌿</div>
+        <h1 style={{ fontSize: '26px', fontWeight: 700, color: 'var(--text)', margin: 0 }}>{t.title}</h1>
+        <p style={{ color: 'var(--muted)', marginTop: '8px', fontSize: '17px' }}>{t.sub}</p>
+      </div>
+
+      <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', justifyContent: 'center', maxWidth: '640px', width: '100%' }}>
+        {roles.map((role, i) => {
+          const cfg = ROLE_CONFIG[role];
+          if (!cfg) return null;
+          return (
+            <button
+              key={role}
+              onClick={() => handleSelect(role)}
+              className="role-card"
+              style={{
+                '--i': i,
+                flex: '1 1 260px', display: 'flex', flexDirection: 'column', alignItems: 'center',
+                gap: '12px', padding: '32px 24px', borderRadius: '16px',
+                border: '2px solid var(--border)', background: 'var(--card)',
+                cursor: 'pointer', transition: 'all 0.18s ease',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = cfg.color; e.currentTarget.style.boxShadow = `0 4px 20px ${cfg.color}22`; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none'; }}
+            >
+              <div className="role-card__icon" style={{ fontSize: '48px' }}>{cfg.icon}</div>
+              <div style={{ fontWeight: 700, fontSize: '19px', color: 'var(--text)' }}>{t[cfg.labelKey]}</div>
+              <div style={{ color: 'var(--muted)', fontSize: '16px', textAlign: 'center', lineHeight: '1.5' }}>{t[cfg.descKey]}</div>
+              <div className="role-card__cta" style={{
+                marginTop: '8px', padding: '8px 24px', borderRadius: '8px',
+                background: cfg.color, color: '#fff', fontSize: '16px', fontWeight: 600,
+              }}>
+                {t.continue}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <button
+        onClick={handleLogout}
+        style={{
+          marginTop: '32px', background: 'none', border: 'none',
+          color: 'var(--muted)', cursor: 'pointer', fontSize: '16px',
+        }}
+      >
+        {t.logout}
+      </button>
+    </main>
+  );
+}

@@ -1,0 +1,324 @@
+import { useMemo, useState } from 'react';
+import { Link } from 'react-router';
+import useSWR from 'swr';
+import { useApp } from '../../context/AppContext';
+import { getAuthSession, request } from '../../services/api';
+import CountUp from '../../components/CountUp';
+import { relativeTime } from '../../utils/relativeTime';
+import SpotlightTour from '../../components/tour/SpotlightTour';
+import HelpButton from '../../components/tour/HelpButton';
+import GettingStartedChecklist from '../../components/checklist/GettingStartedChecklist';
+import { DashHero, PipelineBar, ProgressRing } from '../../components/dash/DashWidgets';
+
+const TR_TOUR_T = {
+  en: {
+    steps: [
+      { target: 'tr-checklist', title: 'Getting started', body: 'Your path from first order to first completed purchase.' },
+      { target: 'tr-quick-actions', title: 'Quick actions', body: 'Jump straight to requests, orders or transaction history.' },
+      { target: 'tr-recent-activity', title: 'Recent activity', body: 'Your latest orders appear here — tap one to jump straight to its details in Orders or History.' },
+      { target: 'tr-notif-bell', title: 'Stay notified', body: 'Order confirmations and delivery updates land here.' },
+    ],
+    next: 'Next →', back: '← Back', skip: 'Skip tour', done: 'Got it', helpAria: 'Replay the guided tour', needHelp: 'Need Help',
+  },
+  si: {
+    steps: [
+      { target: 'tr-checklist', title: 'ආරම්භ කිරීම', body: 'ඔබේ පළමු ඇණවුමේ සිට පළමු සම්පූර්ණ මිලදී ගැනීම දක්වා මාර්ගය.' },
+      { target: 'tr-quick-actions', title: 'ඉක්මන් ක්‍රියා', body: 'ඉල්ලීම්, ඇණවුම් හෝ ගනුදෙනු ඉතිහාසය වෙත සෘජුවම යන්න.' },
+      { target: 'tr-recent-activity', title: 'මෑත ක්‍රියාකාරකම්', body: 'ඔබේ නවතම ඇණවුම් මෙහි දිස්වේ — විස්තර සඳහා ඇණවුම් හෝ ඉතිහාසය වෙත කෙලින්ම යාමට එකක් තට්ටු කරන්න.' },
+      { target: 'tr-notif-bell', title: 'දැනුම්දීම් ලබාගන්න', body: 'ඇණවුම් තහවුරු කිරීම් සහ බෙදාහැරීමේ යාවත්කාලීන කිරීම් මෙහි එයි.' },
+    ],
+    next: 'ඊළඟට →', back: '← ආපසු', skip: 'මඟ හරින්න', done: 'තේරුණා', helpAria: 'මාර්ගෝපදේශය නැවත ධාවනය කරන්න', needHelp: 'උදව් අවශ්‍යද?',
+  },
+  ta: {
+    steps: [
+      { target: 'tr-checklist', title: 'தொடங்குதல்', body: 'உங்கள் முதல் ஆர்டரிலிருந்து முதல் முழுமையான வாங்குதல் வரையிலான பாதை.' },
+      { target: 'tr-quick-actions', title: 'விரைவு செயல்கள்', body: 'கோரிக்கைகள், ஆர்டர்கள் அல்லது பரிவர்த்தனை வரலாற்றுக்கு நேரடியாகச் செல்லுங்கள்.' },
+      { target: 'tr-recent-activity', title: 'சமீபத்திய செயல்பாடு', body: 'உங்கள் சமீபத்திய ஆர்டர்கள் இங்கே தோன்றும் — விவரங்களுக்கு ஆர்டர்கள் அல்லது வரலாற்றுக்கு நேரடியாகச் செல்ல ஒன்றைத் தட்டவும்.' },
+      { target: 'tr-notif-bell', title: 'அறிவிப்புகளைப் பெறுங்கள்', body: 'ஆர்டர் உறுதிப்படுத்தல்கள் மற்றும் டெலிவரி புதுப்பிப்புகள் இங்கே வரும்.' },
+    ],
+    next: 'அடுத்து →', back: '← பின்', skip: 'தவிர்', done: 'சரி', helpAria: 'வழிகாட்டலை மீண்டும் இயக்கு', needHelp: 'உதவி வேண்டுமா?',
+  },
+};
+
+const TR_CHECKLIST_T = {
+  en: { title: 'Getting started', placeOrder: 'Place your first order', getConfirmed: 'Get an order confirmed', trackDelivery: 'Track a delivery', completeTxn: 'Complete a transaction', dismissAria: 'Dismiss checklist' },
+  si: { title: 'ආරම්භ කිරීම', placeOrder: 'ඔබේ පළමු ඇණවුම දෙන්න', getConfirmed: 'ඇණවුමක් තහවුරු කරගන්න', trackDelivery: 'බෙදාහැරීමක් නිරීක්ෂණය කරන්න', completeTxn: 'ගනුදෙනුවක් සම්පූර්ණ කරන්න', dismissAria: 'පරීක්ෂා ලැයිස්තුව සඟවන්න' },
+  ta: { title: 'தொடங்குதல்', placeOrder: 'உங்கள் முதல் ஆர்டரை வையுங்கள்', getConfirmed: 'ஆர்டரை உறுதிப்படுத்துங்கள்', trackDelivery: 'டெலிவரியைக் கண்காணிக்கவும்', completeTxn: 'பரிவர்த்தனையை முடிக்கவும்', dismissAria: 'பட்டியலை மறைக்கவும்' },
+};
+
+const T = {
+  en: {
+    welcome: 'Welcome back', trader: 'Trader',
+    statsRequests: 'Pending Orders', statsOrders: 'Active Orders',
+    statsActive: 'Total Active', statsCompleted: 'Completed',
+    quickActions: 'Quick Actions', browseMarket: 'Browse Marketplace',
+    browseMarketDesc: 'Find crops & products available for purchase',
+    viewRequests: 'Pending Orders', viewRequestsDesc: 'Orders awaiting seller confirmation',
+    viewOrders: 'Active Orders', viewOrdersDesc: 'Confirmed and in-delivery orders',
+    viewHistory: 'Transaction History', viewHistoryDesc: 'View past transactions',
+    recentActivity: 'Recent Activity', noActivity: 'No recent activity.',
+    Pending: 'Pending', Confirmed: 'Confirmed', Delivered: 'Delivered',
+    Completed: 'Completed', Rejected: 'Rejected', Cancelled: 'Cancelled',
+  },
+  si: {
+    welcome: 'නැවත සාදරයෙන් පිළිගනිමු', trader: 'වෙළෙන්දා',
+    statsRequests: 'පොරොත්තුවෙන් ඇති ඇණවුම්', statsOrders: 'ක්‍රියාත්මක ඇණවුම්',
+    statsActive: 'මුළු ක්‍රියාත්මක', statsCompleted: 'සම්පූර්ණ',
+    quickActions: 'ඉක්මන් ක්‍රියා', browseMarket: 'වෙළඳසැල බලන්න',
+    browseMarketDesc: 'මිලදී ගත හැකි බෝග සහ නිෂ්පාදන සොයන්න',
+    viewRequests: 'පොරොත්තුවෙන් ඇති ඇණවුම්', viewRequestsDesc: 'විකුණුම්කරු තහවුරු කිරීමට රැඳෙන ඇණවුම්',
+    viewOrders: 'ක්‍රියාත්මක ඇණවුම්', viewOrdersDesc: 'තහවුරු කළ සහ බෙදාහැරීමේ අදියරේ ඇති ඇණවුම්',
+    viewHistory: 'ගනුදෙනු ඉතිහාසය', viewHistoryDesc: 'පසුගිය ගනුදෙනු බලන්න',
+    recentActivity: 'මෑත ක්‍රියාකාරකම්', noActivity: 'මෑත ක්‍රියාකාරකම් නොමැත.',
+    Pending: 'පොරොත්තුවෙන්', Confirmed: 'තහවුරු', Delivered: 'භාර දුන්',
+    Completed: 'සම්පූර්ණ', Rejected: 'ප්‍රතික්ෂේප', Cancelled: 'අවලංගු',
+  },
+  ta: {
+    welcome: 'மீண்டும் வருக', trader: 'வணிகர்',
+    statsRequests: 'நிலுவை ஆர்டர்கள்', statsOrders: 'செயலில் ஆர்டர்கள்',
+    statsActive: 'மொத்த செயலில்', statsCompleted: 'முடிந்தவை',
+    quickActions: 'விரைவு செயல்கள்', browseMarket: 'சந்தையை உலாவுக',
+    browseMarketDesc: 'வாங்கக் கிடைக்கும் பயிர்கள் மற்றும் பொருட்களைக் கண்டறியவும்',
+    viewRequests: 'நிலுவை ஆர்டர்கள்', viewRequestsDesc: 'விற்பனையாளர் உறுதிக்காகக் காத்திருக்கும் ஆர்டர்கள்',
+    viewOrders: 'செயலில் ஆர்டர்கள்', viewOrdersDesc: 'உறுதிப்படுத்தப்பட்ட மற்றும் விநியோகத்தில் உள்ள ஆர்டர்கள்',
+    viewHistory: 'பரிவர்த்தனை வரலாறு', viewHistoryDesc: 'கடந்த பரிவர்த்தனைகளைப் பார்க்கவும்',
+    recentActivity: 'சமீபத்திய செயல்பாடு', noActivity: 'சமீபத்திய செயல்பாடு இல்லை.',
+    Pending: 'நிலுவையில்', Confirmed: 'உறுதிப்படுத்தப்பட்டது', Delivered: 'வழங்கப்பட்டது',
+    Completed: 'முடிந்தது', Rejected: 'நிராகரிக்கப்பட்டது', Cancelled: 'ரத்து',
+  },
+};
+
+const STATUS_COLORS = {
+  Pending: 'var(--amber)', Confirmed: 'var(--blue)', Delivered: 'var(--green-mid)',
+  Completed: 'var(--green)', Rejected: 'var(--red)', Cancelled: 'var(--muted)',
+};
+
+const TR_HERO_T = {
+  en: { tagline: 'Here is where your orders stand today.', ring: 'Orders completed', ringSub: (c, n) => `${c} of ${n} so far`, pipeline: 'Order pipeline' },
+  si: { tagline: 'අද ඔබේ ඇණවුම්වල තත්ත්වය මෙන්න.', ring: 'සම්පූර්ණ කළ ඇණවුම්', ringSub: (c, n) => `${n} න් ${c}`, pipeline: 'ඇණවුම් ප්‍රවාහය' },
+  ta: { tagline: 'இன்று உங்கள் ஆர்டர்களின் நிலை இதோ.', ring: 'முடிந்த ஆர்டர்கள்', ringSub: (c, n) => `${n} இல் ${c}`, pipeline: 'ஆர்டர் நிலை' },
+};
+
+// Orders other people have placed on this trader's own product listings.
+const TR_SALES_T = { en: 'Sales to handle', si: 'හැසිරවිය යුතු විකුණුම්', ta: 'கையாள வேண்டிய விற்பனைகள்' };
+
+const authFetcher = url => request(url);
+
+export default function TraderDashboard() {
+  const { lang } = useApp();
+  const t        = T[lang] || T.en;
+  const { user } = getAuthSession();
+
+  const { data: rawOrders } = useSWR('/api/marketplace/orders', authFetcher, { refreshInterval: 10000 });
+  const allOrders = Array.isArray(rawOrders) ? rawOrders : [];
+
+  const myOrders = useMemo(
+    () => allOrders.filter(o => o.buyer_id === user?.id),
+    [allOrders, user?.id],
+  );
+
+  const openSales = allOrders.filter(
+    o => o.seller_id === user?.id && ['Pending', 'Confirmed', 'Delivered'].includes(o.status),
+  );
+
+  const pendingOrders   = myOrders.filter(o => o.status === 'Pending');
+  const activeOrders    = myOrders.filter(o => ['Confirmed', 'Delivered'].includes(o.status));
+  const completedOrders = myOrders.filter(o => o.status === 'Completed');
+
+  const heroT = TR_HERO_T[lang] || TR_HERO_T.en;
+  const pipeline = ['Pending', 'Confirmed', 'Delivered', 'Completed'].map(status => ({
+    label: t[status] || status,
+    value: myOrders.filter(o => o.status === status).length,
+    color: STATUS_COLORS[status],
+  }));
+
+  const tourT = TR_TOUR_T[lang] || TR_TOUR_T.en;
+  const checklistT = TR_CHECKLIST_T[lang] || TR_CHECKLIST_T.en;
+  const [tourOpen, setTourOpen] = useState(false);
+  const checklistItems = [
+    { id: 'firstOrder', label: checklistT.placeOrder, done: myOrders.length > 0, href: '/marketplace' },
+    { id: 'confirmed', label: checklistT.getConfirmed, done: myOrders.some(o => o.status !== 'Pending'), href: '/trader/orders' },
+    { id: 'delivered', label: checklistT.trackDelivery, done: myOrders.some(o => ['Delivered', 'Completed'].includes(o.status)), href: '/trader/orders' },
+    { id: 'completed', label: checklistT.completeTxn, done: completedOrders.length > 0, href: '/trader/history' },
+  ];
+
+  const recentItems = useMemo(
+    () => [...myOrders]
+      .sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0))
+      .slice(0, 6),
+    [myOrders],
+  );
+
+  const stats = [
+    { label: t.statsRequests,  value: pendingOrders.length,   icon: '📋', color: 'var(--amber)' },
+    { label: t.statsOrders,    value: activeOrders.length,    icon: '📦', color: 'var(--blue)' },
+    { label: TR_SALES_T[lang] || TR_SALES_T.en, value: openSales.length, icon: '🧾', color: 'var(--accent)', to: '/marketplace?tab=incoming' },
+    { label: t.statsCompleted, value: completedOrders.length, icon: '✅', color: 'var(--green)' },
+  ];
+
+  const quickActions = [
+    { to: '/marketplace',     icon: '🏪', label: t.browseMarket,  desc: t.browseMarketDesc,  color: 'var(--accent)' },
+    { to: '/trader/requests', icon: '📋', label: t.viewRequests,  desc: t.viewRequestsDesc,  color: 'var(--amber)' },
+    { to: '/trader/orders',   icon: '📦', label: t.viewOrders,    desc: t.viewOrdersDesc,    color: 'var(--blue)' },
+    { to: '/trader/history',  icon: '📜', label: t.viewHistory,   desc: t.viewHistoryDesc,   color: 'var(--green)' },
+  ];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+      {/* Welcome */}
+      <DashHero name={user?.full_name?.split(' ')[0] || t.trader} lang={lang} tagline={heroT.tagline} tone="blue">
+        {myOrders.length > 0 && (
+          <ProgressRing
+            pct={(completedOrders.length / myOrders.length) * 100}
+            label={heroT.ring}
+            sub={heroT.ringSub(completedOrders.length, myOrders.length)}
+          />
+        )}
+        <Link className="dash-hero__cta" to="/marketplace">🏪 {t.browseMarket}</Link>
+      </DashHero>
+
+      <GettingStartedChecklist
+        title={checklistT.title}
+        items={checklistItems}
+        storageKey="sa_checklist_dismissed_trader"
+        dismissAria={checklistT.dismissAria}
+        dataTour="tr-checklist"
+      />
+
+      {/* Stats */}
+      <div data-tour="tr-dash-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' }}>
+        {stats.map(s => {
+          const Tile = s.to ? Link : 'div';
+          return (
+          <Tile key={s.label} to={s.to} className="stat-card-hover dash-tile" style={{
+            background: 'var(--card)', borderRadius: '12px',
+            padding: '20px', border: '1px solid var(--border)',
+            display: 'flex', flexDirection: 'column', gap: '8px',
+            textDecoration: 'none',
+            '--tone': s.color,
+          }}>
+            <div className="dash-tile__icon" style={{ fontSize: '28px', width: 'fit-content' }}>{s.icon}</div>
+            <div style={{ fontSize: '28px', fontWeight: 700, color: s.color, lineHeight: 1 }}>
+              <CountUp value={s.value} />
+            </div>
+            <div style={{ fontSize: '15px', color: 'var(--muted)', fontWeight: 500 }}>{s.label}</div>
+          </Tile>
+          );
+        })}
+      </div>
+
+      <PipelineBar title={heroT.pipeline} segments={pipeline} emptyLabel={t.noActivity} />
+
+      {/* Quick Actions */}
+      <div data-tour="tr-quick-actions">
+        <h2 style={{ margin: '0 0 12px', fontSize: '18px', fontWeight: 600, color: 'var(--text)' }}>
+          {t.quickActions}
+        </h2>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+          {quickActions.map(qa => (
+            <Link
+              key={qa.label}
+              to={qa.to}
+              className="dash-action"
+              style={{
+                display: 'flex', alignItems: 'center', gap: '14px',
+                padding: '16px', borderRadius: '10px',
+                background: 'var(--card)', border: '1px solid var(--border)',
+                textDecoration: 'none', '--tone': qa.color,
+              }}
+              onMouseEnter={e => e.currentTarget.style.boxShadow = '0 4px 16px var(--shadow-md)'}
+              onMouseLeave={e => e.currentTarget.style.boxShadow = 'none'}
+            >
+              <div className="dash-action__icon" style={{
+                width: '44px', height: '44px', borderRadius: '10px',
+                background: `color-mix(in srgb, ${qa.color} 15%, transparent)`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: '22px', flexShrink: 0,
+              }}>
+                {qa.icon}
+              </div>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '16px', color: 'var(--text)' }}>{qa.label}</div>
+                <div style={{ fontSize: '14px', color: 'var(--muted)', marginTop: '2px' }}>{qa.desc}</div>
+              </div>
+            </Link>
+          ))}
+        </div>
+      </div>
+
+      {/* Recent Activity */}
+      <div data-tour="tr-recent-activity">
+        <h2 style={{ margin: '0 0 12px', fontSize: '18px', fontWeight: 600, color: 'var(--text)' }}>
+          {t.recentActivity}
+        </h2>
+        <div style={{
+          background: 'var(--card)', borderRadius: '12px',
+          border: '1px solid var(--border)', overflow: 'hidden',
+        }}>
+          {recentItems.length === 0 ? (
+            <div style={{ padding: '32px', textAlign: 'center', color: 'var(--muted)' }}>
+              {t.noActivity}
+            </div>
+          ) : (
+            recentItems.map((item, i) => {
+              const color = STATUS_COLORS[item.status] || 'var(--muted)';
+              const label = t[item.status] || item.status;
+              const dest = ['Completed', 'Rejected', 'Cancelled'].includes(item.status) ? '/trader/history' : '/trader/orders';
+              return (
+                <Link key={item.id} to={dest} className="dash-row" style={{
+                  '--i': i,
+                  padding: '14px 20px', textDecoration: 'none',
+                  borderBottom: i < recentItems.length - 1 ? '1px solid var(--border)' : 'none',
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
+                  transition: 'background var(--tr)',
+                }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--surface-hover)'}
+                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <span className="dash-row__icon" style={{ fontSize: '19px' }}>📦</span>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '16px', color: 'var(--text)' }}>
+                        {item.listing_name || '—'}
+                      </div>
+                      <div style={{ fontSize: '14px', color: 'var(--muted)' }}>
+                        {item.requested_quantity} {item.unit ?? 'kg'}
+                        {item.agreed_price
+                          ? ` · Rs. ${item.agreed_price}/${item.unit ?? 'kg'}`
+                          : item.proposed_price
+                          ? ` · Rs. ${item.proposed_price}/${item.unit ?? 'kg'}`
+                          : ''}
+                        {' · from '}{item.seller_name}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px' }}>
+                    <span style={{
+                      padding: '3px 10px', borderRadius: '20px', fontSize: '14px',
+                      fontWeight: 600, background: `color-mix(in srgb, ${color} 15%, transparent)`,
+                      color, whiteSpace: 'nowrap',
+                    }}>
+                      {label}
+                    </span>
+                    {item.updated_at && (
+                      <span style={{ fontSize: '12px', color: 'var(--muted)' }}>{relativeTime(item.updated_at)}</span>
+                    )}
+                  </div>
+                </Link>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      <HelpButton label={tourT.needHelp} ariaLabel={tourT.helpAria} onClick={() => setTourOpen(true)} />
+      <SpotlightTour
+        steps={tourT.steps}
+        open={tourOpen}
+        onClose={() => setTourOpen(false)}
+        labels={{ next: tourT.next, back: tourT.back, skip: tourT.skip, done: tourT.done }}
+      />
+
+    </div>
+  );
+}

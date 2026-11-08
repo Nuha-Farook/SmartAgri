@@ -1,0 +1,27 @@
+FROM node:22-alpine AS build
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+
+ARG VITE_API_URL=""
+ARG VITE_ML_URL=""
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_ML_URL=$VITE_ML_URL
+
+RUN npm run build
+
+
+FROM nginx:alpine
+
+COPY --from=build /app/dist /usr/share/nginx/html
+# select-conf.sh picks the HTTP or HTTPS config at container start (see nginx/).
+RUN rm /etc/nginx/conf.d/default.conf
+COPY nginx/locations.conf nginx/http.conf.template nginx/https.conf.template /etc/nginx/smartagri/
+COPY nginx/select-conf.sh /docker-entrypoint.d/15-smartagri-select-conf.sh
+RUN chmod +x /docker-entrypoint.d/15-smartagri-select-conf.sh
+
+EXPOSE 80 443

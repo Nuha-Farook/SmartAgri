@@ -1,0 +1,352 @@
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from pydantic import BaseModel, EmailStr
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.deps import get_current_user, get_db
+from app.core.security import (
+    decode_token,
+    hash_password,
+    issue_token_pair,
+    token_is_current,
+    verify_password,
+)
+from app.models.user import User, UserRole
+from app.schemas.auth import AuthResponse, UserLogin, UserRegister
+from app.schemas.user import PasswordChange, UserRead, UserUpdate
+from app.services.auth import (
+    authenticate_user,
+    create_user,
+    delete_user_and_data,
+    generate_reset_token,
+    generate_verification_token,
+    get_redirect_path,
+    get_user_by_email,
+    normalize_email,
+)
+from app.services.email import send_password_reset_email, send_quietly, send_verification_email
+from app.core.limiter import limiter
+from app.utils.image_storage import ImageTooLargeError, InvalidImageError, store_image
+
+router = APIRouter()
+
+
+def _as_utc(value: datetime) -> datetime:
+    """SQLite (tests) drops the timezone; PostgreSQL keeps it."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+# ── Registration ─────────────────────────────────────────────────────────────
+
+class RegisterResponse(BaseModel):
+    message: str
+    email: str
+
+
+@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
+def register_user(request: Request, payload: UserRegister, background_tasks: BackgroundTasks,
+                  db: Session = Depends(get_db)) -> RegisterResponse:
+    existing_user = get_user_by_email(db, payload.email)
+    if existing_user is not None:
+        # Allow adding a new role to an existing verified account
+        if not verify_password(payload.password, existing_user.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email is already registered",
+            )
+        if not existing_user.is_verified:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email is already registered but not yet verified. Please check your inbox.",
+            )
+        current_roles = set(existing_user.roles or [existing_user.role.value])
+        new_roles = [r for r in payload.roles if r not in current_roles and r in {UserRole.LAND_OWNER, UserRole.TRADER}]
+        if not new_roles:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email is already registered with these roles",
+            )
+        existing_user.roles = sorted(current_roles | {r.value for r in new_roles})
+        db.commit()
+        db.refresh(existing_user)
+        return RegisterResponse(
+            message="Role added successfully. Please log in again.",
+            email=existing_user.email,
+        )
+
+    valid_roles = [r for r in payload.roles if r in {UserRole.LAND_OWNER, UserRole.TRADER}]
+    if not valid_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only Trader and Land Owner users can register",
+        )
+
+    user = create_user(db, payload)
+    if user.email_verification_token:
+        # Sent after the response: the account is already committed, so a slow
+        # or failing SMTP server must not turn the registration into an error.
+        background_tasks.add_task(send_quietly, send_verification_email,
+                                  user.email, user.full_name, user.email_verification_token)
+        return RegisterResponse(
+            message="Account created. Please check your email to verify your account.",
+            email=user.email,
+        )
+    # EMAIL_ENABLED=false — user is auto-verified, can log in immediately
+    return RegisterResponse(
+        message="Account created. You can now log in.",
+        email=user.email,
+    )
+
+
+# ── Email verification ────────────────────────────────────────────────────────
+
+@router.post("/resend-verification")
+@limiter.limit("5/minute")
+def resend_verification(request: Request, email: EmailStr, background_tasks: BackgroundTasks,
+                        db: Session = Depends(get_db)):
+    user = get_user_by_email(db, email)
+    if user is None or user.is_verified:
+        return {"message": "If that email is registered and unverified, a new code has been sent."}
+    code = generate_verification_token(db, user)
+    background_tasks.add_task(send_quietly, send_verification_email, user.email, user.full_name, code)
+    return {"message": "If that email is registered and unverified, a new code has been sent."}
+
+
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    code: str
+
+
+# The code is only 6 digits, so guesses have to be rate-limited.
+@router.post("/verify-email")
+@limiter.limit("10/minute")
+def verify_email(request: Request, payload: VerifyEmailRequest, db: Session = Depends(get_db)):
+    user = get_user_by_email(db, payload.email)
+    if (
+        user is None
+        or user.is_verified
+        or user.email_verification_token != payload.code.strip()
+        or user.email_code_expires is None
+        or datetime.now(timezone.utc) > _as_utc(user.email_code_expires)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code.",
+        )
+    user.is_verified = True
+    user.email_verification_token = None
+    user.email_code_expires = None
+    db.commit()
+    return {"message": "Email verified successfully. You can now log in."}
+
+
+# ── Login ─────────────────────────────────────────────────────────────────────
+
+@router.post("/login", response_model=AuthResponse)
+@limiter.limit("10/minute")
+def login_user(request: Request, payload: UserLogin, db: Session = Depends(get_db)) -> AuthResponse:
+    user = authenticate_user(db, payload.email, payload.password)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="EMAIL_NOT_VERIFIED",
+        )
+
+    if user.is_suspended:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been suspended. Please contact support.",
+        )
+
+    access_token, refresh_token = issue_token_pair(user)
+    return AuthResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        redirect_to=get_redirect_path(user),
+        user=UserRead.model_validate(user),
+    )
+
+
+# ── Token refresh ────────────────────────────────────────────────────────────
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class RefreshResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+@router.post("/refresh", response_model=RefreshResponse)
+def refresh_token(payload: RefreshRequest, db: Session = Depends(get_db)) -> RefreshResponse:
+    from jose import JWTError
+    try:
+        data = decode_token(payload.refresh_token)
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
+
+    if data.get("type") != "refresh":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
+
+    try:
+        user = db.get(User, int(data.get("sub")))
+    except (TypeError, ValueError):
+        user = None
+    if user is None or user.is_suspended:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or suspended")
+    if not token_is_current(data, user):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token")
+
+    new_access, new_refresh = issue_token_pair(user)
+    return RefreshResponse(access_token=new_access, refresh_token=new_refresh)
+
+
+# ── Forgot / reset password ───────────────────────────────────────────────────
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+@router.post("/forgot-password")
+@limiter.limit("5/minute")
+def forgot_password(request: Request, payload: ForgotPasswordRequest, background_tasks: BackgroundTasks,
+                    db: Session = Depends(get_db)):
+    user = get_user_by_email(db, payload.email)
+    if user is not None and user.is_verified:
+        token = generate_reset_token(db, user)
+        background_tasks.add_task(send_quietly, send_password_reset_email, user.email, user.full_name, token)
+    # Always return the same message to prevent email enumeration
+    return {"message": "If that email belongs to a verified account, a reset link has been sent."}
+
+
+@router.post("/reset-password")
+@limiter.limit("10/minute")
+def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+    if len(payload.new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Password must be at least 8 characters.",
+        )
+
+    user = db.execute(
+        select(User).where(User.reset_token == payload.token)
+    ).scalar_one_or_none()
+
+    if user is None or user.reset_token_expires is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset link.",
+        )
+
+    if datetime.now(timezone.utc) > _as_utc(user.reset_token_expires):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This reset link has expired. Please request a new one.",
+        )
+
+    user.hashed_password = hash_password(payload.new_password)
+    user.token_version += 1  # signs out every device still holding an old token
+    user.reset_token = None
+    user.reset_token_expires = None
+    db.commit()
+    return {"message": "Password reset successfully. You can now log in."}
+
+
+# ── Profile ───────────────────────────────────────────────────────────────────
+
+@router.get("/me", response_model=UserRead)
+def read_current_user(current_user: User = Depends(get_current_user)) -> UserRead:
+    return UserRead.model_validate(current_user)
+
+
+@router.put("/me", response_model=UserRead)
+def update_profile(
+    payload: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserRead:
+    if payload.full_name is not None:
+        current_user.full_name = payload.full_name
+    new_email = normalize_email(payload.email) if payload.email is not None else None
+    if new_email is not None and new_email != current_user.email:
+        existing = get_user_by_email(db, new_email)
+        if existing is not None and existing.id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already in use")
+        current_user.email = new_email
+    if "profile_image" in payload.model_fields_set:
+        try:
+            current_user.profile_image = store_image(payload.profile_image)
+        except ImageTooLargeError as exc:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)) from exc
+        except InvalidImageError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if "phone_number" in payload.model_fields_set:
+        current_user.phone_number = payload.phone_number
+    db.commit()
+    db.refresh(current_user)
+    return UserRead.model_validate(current_user)
+
+
+class PasswordChangeResponse(UserRead):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+@router.put("/me/password", response_model=PasswordChangeResponse)
+def change_password(
+    payload: PasswordChange,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PasswordChangeResponse:
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="The new password must be different from the current one")
+    current_user.hashed_password = hash_password(payload.new_password)
+    # Signs out every other device. This one gets a fresh pair in the response
+    # so it stays logged in.
+    current_user.token_version += 1
+    db.commit()
+    db.refresh(current_user)
+    access_token, refresh_token = issue_token_pair(current_user)
+    return PasswordChangeResponse(
+        **UserRead.model_validate(current_user).model_dump(),
+        access_token=access_token,
+        refresh_token=refresh_token,
+    )
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_account(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    # The startup hook recreates a missing admin with the default password,
+    # so an admin deleting themselves would quietly reset the admin login.
+    if current_user.role == UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The administrator account cannot be deleted",
+        )
+    delete_user_and_data(db, current_user)
+    db.commit()

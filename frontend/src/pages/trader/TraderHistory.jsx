@@ -1,0 +1,301 @@
+import { useMemo, useState } from 'react';
+import { Link } from 'react-router';
+import useSWR from 'swr';
+import { useApp } from '../../context/AppContext';
+import { getAuthSession, request } from '../../services/api';
+import { SkeletonRows } from '../../components/Skeleton';
+import SpotlightTour   from '../../components/tour/SpotlightTour';
+import HelpButton      from '../../components/tour/HelpButton';
+
+const TRH_TOUR_T = {
+  en: {
+    steps: [
+      { target: 'tr-hist-summary', title: 'Your totals', body: 'A quick summary of how many orders you’ve placed and how much you’ve spent.' },
+      { target: 'tr-hist-filters', title: 'Filter your history', body: 'Switch between all, completed, or cancelled transactions.' },
+      { target: 'tr-hist-row', title: 'Transaction details', body: 'Each row shows the crop, quantity, price, and final status of a past order.' },
+    ],
+    next: 'Next →', back: '← Back', skip: 'Skip tour', done: 'Got it', helpAria: 'Replay the guided tour', needHelp: 'Need Help',
+  },
+  si: {
+    steps: [
+      { target: 'tr-hist-summary', title: 'ඔබේ එකතුව', body: 'ඔබ තැබූ ඇණවුම් ගණන සහ වැය කළ මුදල පිළිබඳ ඉක්මන් සාරාංශයක්.' },
+      { target: 'tr-hist-filters', title: 'ඔබේ ඉතිහාසය පෙරහන් කරන්න', body: 'සියල්ල, සම්පූර්ණ කළ, හෝ අවලංගු කළ ගනුදෙනු අතර මාරු වන්න.' },
+      { target: 'tr-hist-row', title: 'ගනුදෙනු විස්තර', body: 'සෑම පේළියක්ම අතීත ඇණවුමක බෝගය, ප්‍රමාණය, මිල, සහ අවසාන තත්ත්වය පෙන්වයි.' },
+    ],
+    next: 'ඊළඟට →', back: '← ආපසු', skip: 'මඟ හරින්න', done: 'තේරුණා', helpAria: 'මාර්ගෝපදේශය නැවත ධාවනය කරන්න', needHelp: 'උදව් අවශ්‍යද?',
+  },
+  ta: {
+    steps: [
+      { target: 'tr-hist-summary', title: 'உங்கள் மொத்தங்கள்', body: 'நீங்கள் வைத்த ஆர்டர்கள் மற்றும் செலவழித்த தொகையின் விரைவான சுருக்கம்.' },
+      { target: 'tr-hist-filters', title: 'உங்கள் வரலாற்றை வடிகட்டவும்', body: 'அனைத்தும், முடிந்தவை அல்லது ரத்து செய்யப்பட்ட பரிவர்த்தனைகளுக்கு இடையே மாறவும்.' },
+      { target: 'tr-hist-row', title: 'பரிவர்த்தனை விவரங்கள்', body: 'ஒவ்வொரு வரிசையும் கடந்த ஆர்டரின் பயிர், அளவு, விலை மற்றும் இறுதி நிலையைக் காட்டுகிறது.' },
+    ],
+    next: 'அடுத்து →', back: '← பின்', skip: 'தவிர்', done: 'சரி', helpAria: 'வழிகாட்டலை மீண்டும் இயக்கு', needHelp: 'உதவி வேண்டுமா?',
+  },
+};
+
+const RATE_T = {
+  en: { rate: 'Rate the seller', rated: 'Rated' },
+  si: { rate: 'විකුණුම්කරුට ඇගයීමක් දෙන්න', rated: 'ඇගයුවා' },
+  ta: { rate: 'விற்பனையாளரை மதிப்பிடு', rated: 'மதிப்பிடப்பட்டது' },
+};
+
+const T = {
+  en: {
+    title: 'Transaction History', subtitle: 'A record of all your completed and cancelled transactions',
+    noHistory: 'No transaction history yet.', noHistorySub: 'Completed and cancelled orders will appear here.',
+    goToMarket: 'Browse Marketplace',
+    crop: 'Crop', qty: 'Quantity', price: 'Unit price', totalSpent: 'Total Spent',
+    seller: 'Seller', orderedOn: 'Date', status: 'Status',
+    Completed: 'Completed', Cancelled: 'Cancelled', Rejected: 'Rejected',
+    filterAll: 'All', filterCompleted: 'Completed', filterCancelled: 'Cancelled',
+    summary: 'Summary', totalOrders: 'Total Orders', totalValue: 'Total Value',
+    perKg: '/kg',
+  },
+  si: {
+    title: 'ගනුදෙනු ඉතිහාසය', subtitle: 'ඔබ සම්පූර්ණ කළ සහ අවලංගු කළ සියලු ගනුදෙනුවල වාර්තාව',
+    noHistory: 'ගනුදෙනු ඉතිහාසය නොමැත.', noHistorySub: 'සම්පූර්ණ කළ සහ අවලංගු කළ ඇණවුම් මෙහි දිස් වේ.',
+    goToMarket: 'වෙළඳසැල බලන්න',
+    crop: 'බෝගය', qty: 'ප්‍රමාණය', price: 'ඒකක මිල', totalSpent: 'මුළු වියදම',
+    seller: 'විකුණුම්කරු', orderedOn: 'දිනය', status: 'තත්ත්වය',
+    Completed: 'සම්පූර්ණ', Cancelled: 'අවලංගු', Rejected: 'ප්‍රතික්ෂේප',
+    filterAll: 'සියල්ල', filterCompleted: 'සම්පූර්ණ', filterCancelled: 'අවලංගු',
+    summary: 'සාරාංශය', totalOrders: 'මුළු ඇණවුම්', totalValue: 'මුළු වටිනාකම',
+    perKg: '/kg',
+  },
+  ta: {
+    title: 'பரிவர்த்தனை வரலாறு', subtitle: 'உங்கள் அனைத்துப் பரிவர்த்தனைகளின் பதிவு',
+    noHistory: 'பரிவர்த்தனை வரலாறு இல்லை.', noHistorySub: 'முடிந்த மற்றும் ரத்தான ஆர்டர்கள் இங்கே தோன்றும்.',
+    goToMarket: 'சந்தையை உலாவுக',
+    crop: 'பயிர்', qty: 'அளவு', price: 'அலகு விலை', totalSpent: 'மொத்த செலவு',
+    seller: 'விற்பனையாளர்', orderedOn: 'தேதி', status: 'நிலை',
+    Completed: 'முடிந்தது', Cancelled: 'ரத்து', Rejected: 'நிராகரிக்கப்பட்டது',
+    filterAll: 'அனைத்தும்', filterCompleted: 'முடிந்தவை', filterCancelled: 'ரத்தானவை',
+    summary: 'சுருக்கம்', totalOrders: 'மொத்த ஆர்டர்கள்', totalValue: 'மொத்த மதிப்பு',
+    perKg: '/kg',
+  },
+};
+
+const STATUS_STYLE = {
+  Completed: { bg: 'color-mix(in srgb, var(--green) 15%, transparent)', color: 'var(--green)' },
+  Cancelled: { bg: 'color-mix(in srgb, var(--muted) 20%, transparent)', color: 'var(--muted)' },
+  Rejected:  { bg: 'color-mix(in srgb, var(--red)   15%, transparent)', color: 'var(--red)' },
+};
+
+const authFetcher = url => request(url);
+
+export default function TraderHistory() {
+  const { lang } = useApp();
+  const t        = T[lang] || T.en;
+  const { user } = getAuthSession();
+
+  const [filter, setFilter] = useState('all');
+
+  const { data: rawOrders, isLoading } = useSWR('/api/marketplace/orders', authFetcher, { refreshInterval: 15000 });
+  const allOrders = Array.isArray(rawOrders) ? rawOrders : [];
+
+  const historyOrders = useMemo(
+    () => allOrders
+      .filter(o => o.buyer_id === user?.id && ['Completed', 'Cancelled', 'Rejected'].includes(o.status))
+      .sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)),
+    [allOrders, user?.id],
+  );
+
+  const filtered = useMemo(
+    () => filter === 'all' ? historyOrders : historyOrders.filter(o => o.status === filter),
+    [historyOrders, filter],
+  );
+  const trhTourT = TRH_TOUR_T[lang] || TRH_TOUR_T.en;
+  const [tourOpen, setTourOpen] = useState(false);
+
+  const completedOrders = historyOrders.filter(o => o.status === 'Completed');
+  const totalValue      = completedOrders.reduce((sum, o) => sum + ((o.agreed_price || o.proposed_price || 0) * (o.requested_quantity || 0)), 0);
+
+  const filters = [
+    { key: 'all',       label: t.filterAll },
+    { key: 'Completed', label: t.filterCompleted },
+    { key: 'Cancelled', label: t.filterCancelled },
+  ];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: '21px', fontWeight: 700, color: 'var(--text)' }}>{t.title}</h1>
+          <p style={{ margin: '4px 0 0', color: 'var(--muted)', fontSize: '16px' }}>{t.subtitle}</p>
+        </div>
+        <Link
+          to="/marketplace"
+          style={{
+            padding: '10px 18px', borderRadius: '8px',
+            background: 'var(--accent)', color: 'var(--accent-text)',
+            textDecoration: 'none', fontWeight: 600, fontSize: '16px', whiteSpace: 'nowrap',
+          }}
+        >
+          🏪 {t.goToMarket}
+        </Link>
+      </div>
+
+      {/* Summary cards */}
+      {historyOrders.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }} data-tour="tr-hist-summary">
+          <div className="fx-card" style={{
+            background: 'var(--card)', border: '1px solid var(--border)',
+            borderRadius: '10px', padding: '16px',
+          }}>
+            <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--accent)' }}>{historyOrders.length}</div>
+            <div style={{ fontSize: '15px', color: 'var(--muted)', marginTop: '4px' }}>{t.totalOrders}</div>
+          </div>
+          <div className="fx-card" style={{
+            background: 'var(--card)', border: '1px solid var(--border)',
+            borderRadius: '10px', padding: '16px',
+          }}>
+            <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--green)' }}>
+              Rs. {totalValue.toLocaleString()}
+            </div>
+            <div style={{ fontSize: '15px', color: 'var(--muted)', marginTop: '4px' }}>{t.totalValue}</div>
+          </div>
+          <div className="fx-card" style={{
+            background: 'var(--card)', border: '1px solid var(--border)',
+            borderRadius: '10px', padding: '16px',
+          }}>
+            <div style={{ fontSize: '22px', fontWeight: 700, color: 'var(--green)' }}>{completedOrders.length}</div>
+            <div style={{ fontSize: '15px', color: 'var(--muted)', marginTop: '4px' }}>{t.Completed}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Filter chips */}
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }} data-tour="tr-hist-filters">
+        {filters.map(f => (
+          <button
+            key={f.key}
+            type="button"
+            onClick={() => setFilter(f.key)}
+            style={{
+              padding: '6px 16px', borderRadius: '20px', fontSize: '15px',
+              border: filter === f.key ? '2px solid var(--accent)' : '1.5px solid var(--border)',
+              background: filter === f.key ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : 'var(--card)',
+              color: filter === f.key ? 'var(--accent)' : 'var(--muted)',
+              fontWeight: filter === f.key ? 600 : 400,
+              cursor: 'pointer', transition: 'all 0.15s',
+            }}
+          >
+            {f.label}
+            <span style={{ marginLeft: '6px', opacity: 0.7 }}>
+              ({f.key === 'all' ? historyOrders.length : historyOrders.filter(o => o.status === f.key).length})
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {/* Table / List */}
+      {isLoading ? (
+        <SkeletonRows count={3} />
+      ) : filtered.length === 0 ? (
+        <div className="fx-card" style={{
+          background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '12px',
+          padding: '48px', textAlign: 'center',
+        }}>
+          <div style={{ fontSize: '40px', marginBottom: '12px' }}>📜</div>
+          <div style={{ fontWeight: 600, color: 'var(--text)', marginBottom: '6px' }}>{t.noHistory}</div>
+          <div style={{ color: 'var(--muted)', fontSize: '16px', marginBottom: '20px' }}>{t.noHistorySub}</div>
+          <Link
+            to="/marketplace"
+            style={{
+              padding: '10px 20px', borderRadius: '8px',
+              background: 'var(--accent)', color: 'var(--accent-text)',
+              textDecoration: 'none', fontWeight: 600, fontSize: '16px',
+            }}
+          >
+            🏪 {t.goToMarket}
+          </Link>
+        </div>
+      ) : (
+        <div className="fx-card" style={{
+          background: 'var(--card)', border: '1px solid var(--border)',
+          borderRadius: '12px', overflow: 'hidden',
+        }}>
+          {/* Table header */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
+            gap: '8px', padding: '12px 20px',
+            background: 'var(--surface-1)',
+            fontSize: '12.5px', color: 'var(--muted)',
+            fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em',
+          }}>
+            <div>{t.crop}</div>
+            <div>{t.qty}</div>
+            <div>{t.price}</div>
+            <div>{t.totalSpent}</div>
+            <div>{t.status}</div>
+          </div>
+
+          {/* Rows */}
+          {filtered.map((order, i) => {
+            const stStyle = STATUS_STYLE[order.status] || STATUS_STYLE.Completed;
+            const price   = order.agreed_price || order.proposed_price || 0;
+            const total   = (price * (order.requested_quantity || 0)).toLocaleString();
+            return (
+              <div key={order.id} style={{
+                display: 'grid',
+                gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
+                gap: '8px', padding: '14px 20px',
+                borderTop: i > 0 ? '1px solid var(--border)' : 'none',
+                alignItems: 'center',
+              }} data-tour={i === 0 ? 'tr-hist-row' : undefined}>
+                <div style={{ overflowWrap: 'break-word', minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, color: 'var(--text)', fontSize: '16px' }}>
+                    {order.listing_name || '—'}
+                  </div>
+                  <div style={{ fontSize: '14px', color: 'var(--muted)', marginTop: '2px' }}>
+                    {order.seller_name} ·{' '}
+                    {order.updated_at
+                      ? new Date(order.updated_at).toLocaleDateString()
+                      : order.created_at
+                      ? new Date(order.created_at).toLocaleDateString()
+                      : '—'}
+                  </div>
+                  {/* Rating and the receipt live on the marketplace's history tab */}
+                  {order.status === 'Completed' && (
+                    order.rated
+                      ? <div style={{ fontSize: '14px', color: 'var(--muted)', marginTop: '4px' }}>⭐ {RATE_T[lang]?.rated || RATE_T.en.rated}</div>
+                      : <Link to="/marketplace?tab=history" style={{ display: 'inline-block', fontSize: '14px', fontWeight: 600, color: 'var(--accent)', marginTop: '4px', textDecoration: 'none' }}>
+                          ⭐ {RATE_T[lang]?.rate || RATE_T.en.rate} →
+                        </Link>
+                  )}
+                </div>
+                <div style={{ fontSize: '16px', color: 'var(--text)' }}>{order.requested_quantity} {order.unit ?? 'kg'}</div>
+                <div style={{ fontSize: '16px', color: 'var(--text)' }}>
+                  {price ? `Rs. ${price}/${order.unit ?? 'kg'}` : '—'}
+                </div>
+                <div style={{ fontSize: '16px', fontWeight: 600, color: order.status === 'Completed' ? 'var(--green)' : 'var(--muted)' }}>
+                  {order.status === 'Completed' ? `Rs. ${total}` : '—'}
+                </div>
+                <div>
+                  <span style={{
+                    padding: '3px 10px', borderRadius: '20px', fontSize: '14px',
+                    fontWeight: 600, background: stStyle.bg, color: stStyle.color,
+                  }}>
+                    {t[order.status] || order.status}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <HelpButton label={trhTourT.needHelp} ariaLabel={trhTourT.helpAria} onClick={() => setTourOpen(true)} />
+      <SpotlightTour
+        steps={trhTourT.steps}
+        open={tourOpen}
+        onClose={() => setTourOpen(false)}
+        labels={{ next: trhTourT.next, back: trhTourT.back, skip: trhTourT.skip, done: trhTourT.done }}
+      />
+    </div>
+  );
+}

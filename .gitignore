@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Model binaries (large — store in cloud storage or DVC)
+backend/ai_models/training/models/*.pkl
+backend/ai_models/training/models/*.joblib
+backend/ai_models/training/models/backup_*/
+
+# Model evaluation artifacts
+backend/ai_models/training/models/*.png
+backend/ai_models/training/models/*.csv
+
+# Environment variables (never commit secrets)
+backend/.env
+frontend/.env.local
+frontend/.env
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code session files
+.claude/
+**/.claude/
+
+# Project documents (PDFs, large files)
+docs/
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+
+# Log files
+*.log
+backend/*.log
+
+# User-uploaded listing images (runtime data, not code)
+backend/uploads/
+
+# Dev/test helper files
+frontend/public/test-login.html
+
+# SQLite test databases
+*.db
+*.db-shm
+*.db-wal
+
+# Dataset exports and Office documents (reference material, not code)
+data/
+# ...but the frontend's own data modules are source code.
+!frontend/src/data/
+*.docx
+*.xlsx
+
+# Database dumps contain user e-mails, phone numbers and password hashes
+*.sql
+
+# Local tool configs
+.claude/

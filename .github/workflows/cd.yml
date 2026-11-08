@@ -1,0 +1,100 @@
+name: CD
+
+# Runs only after CI has passed on main, so a failing commit is never published.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  # GitHub Release that holds the trained model files (they are too large for
+  # git). After retraining, upload a new release and change this one line.
+  MODEL_RELEASE: model-v1
+  # The commit CI tested. On a manual run this is the branch head.
+  BUILD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  prepare:
+    name: Compute image namespace
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      owner: ${{ steps.owner.outputs.lowercase }}
+    steps:
+      - name: Lowercase repository owner
+        id: owner
+        run: echo "lowercase=${OWNER,,}" >> "$GITHUB_OUTPUT"
+        env:
+          OWNER: ${{ github.repository_owner }}
+
+  build-backend:
+    name: Build & publish backend image
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BUILD_SHA }}
+
+      - name: Download the ML model
+        run: gh release download "$MODEL_RELEASE" --dir backend/ai_models/training/models --pattern "*.pkl" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner }}/smartagri-backend:latest
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner }}/smartagri-backend:sha-${{ env.BUILD_SHA }}
+
+  build-frontend:
+    name: Build & publish frontend image
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BUILD_SHA }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          build-args: |
+            VITE_API_URL=
+            VITE_ML_URL=
+          tags: |
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner }}/smartagri-frontend:latest
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.owner }}/smartagri-frontend:sha-${{ env.BUILD_SHA }}
